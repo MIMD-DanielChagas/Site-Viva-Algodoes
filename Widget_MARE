@@ -1,0 +1,403 @@
+
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Montserrat', sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            color: #4c6b5c; 
+            background: transparent;
+        }
+        
+        .section-title {
+            font-size: 1.8em;
+            font-weight: 600;
+            color: #4c6b5c;
+            margin-bottom: 25px;
+            text-align: center;
+            border-bottom: 2px solid #d1ad6c;
+            padding-bottom: 15px;
+        }
+        
+        .location-label {
+            text-align: center;
+            font-size: 0.95em;
+            color: #4c6b5c;
+            margin-bottom: 20px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .tides-scroll-container {
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 15px;
+            scrollbar-width: thin;
+            scrollbar-color: #d1ad6c #f9f6f1;
+        }
+        
+        .tides-chart-wrapper {
+            min-width: 1800px;
+            position: relative;
+        }
+        
+        .days-header {
+            display: flex;
+            margin-bottom: 10px;
+            background: #f9f6f1;
+            border-radius: 8px 8px 0 0;
+            padding: 10px 0;
+        }
+        
+        .day-header-item {
+            flex: 1;
+            text-align: center;
+            padding: 8px;
+        }
+        
+        .day-header-item.today {
+            background: rgba(209, 173, 108, 0.2);
+            border-radius: 6px;
+        }
+        
+        .day-header-name {
+            font-size: 0.85em;
+            font-weight: 600;
+            color: #4c6b5c;
+            text-transform: uppercase;
+            display: block;
+            margin-bottom: 3px;
+        }
+        
+        .day-header-date {
+            font-size: 0.75em;
+            color: #d1ad6c;
+            display: block;
+        }
+        
+        .chart-area {
+            background: linear-gradient(to bottom, #e8f4f8 0%, #c5e3ed 100%);
+            border-radius: 10px;
+            padding: 20px;
+            position: relative;
+            height: 150px;
+        }
+        
+        .chart-canvas-container {
+            position: relative;
+            height: 100%;
+        }
+        
+        .daily-summary {
+            display: flex;
+            margin-top: 20px;
+            background: white;
+            border-radius: 8px;
+            padding: 15px 0;
+        }
+        
+        .summary-day {
+            flex: 1;
+            text-align: center;
+            padding: 0 10px;
+            border-right: 1px solid rgba(209, 173, 108, 0.2);
+        }
+        
+        .summary-day:last-child {
+            border-right: none;
+        }
+        
+        .summary-day.today {
+            background: rgba(209, 173, 108, 0.1);
+            border-radius: 6px;
+        }
+        
+        .summary-tides {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 8px;
+        }
+        
+        .summary-tide {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 3px;
+        }
+        
+        .summary-tide-label {
+            font-size: 0.65em;
+            color: #4c6b5c;
+            opacity: 0.7;
+            text-transform: uppercase;
+        }
+        
+        .summary-tide-value {
+            font-size: 0.75em;
+            font-weight: 600;
+            color: #d1ad6c;
+        }
+        
+        .summary-tide-time {
+            font-size: 0.65em;
+            color: #4c6b5c;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #d1ad6c;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <h2 class="section-title">🌊 Tábua de Marés</h2>
+    <div class="location-label">
+        <span>📍</span>
+        <span>Praia de Algodões</span>
+    </div>
+    
+    <div id="tides-content" class="loading">Carregando previsão de marés...</div>
+
+    <script>
+        const weekDays = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+        let continuousChart = null;
+
+        window.onload = () => {
+            console.log("🌊 Widget Maré carregado");
+            window.parent.postMessage("readyTides", "*");
+        };
+
+        window.onmessage = (event) => {
+            if (event.data && event.data.type === 'tides') {
+                const tidesData = event.data.data;
+                console.log("🌊 Recebeu", tidesData.length, "extremos");
+                
+                if (tidesData && tidesData.length > 0) {
+                    processAndRenderTides(tidesData);
+                    window.parent.postMessage("tidesReceived", "*");
+                }
+            }
+        };
+
+        function processAndRenderTides(extremes) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            // Ordena extremos por tempo
+            extremes.sort((a, b) => new Date(a.time) - new Date(b.time));
+            
+            console.log("📊 Primeiro extremo:", extremes[0].time);
+            console.log("📊 Último extremo:", extremes[extremes.length - 1].time);
+            
+            // Cria array contínuo interpolado
+            const allPoints = [];
+            const startTime = new Date(extremes[0].time);
+            const endTime = new Date(extremes[extremes.length - 1].time);
+            const totalHours = (endTime - startTime) / (1000 * 60 * 60);
+            const pointsPerHour = 10;
+            const totalPoints = Math.floor(totalHours * pointsPerHour);
+            
+            console.log("📊 Gerando", totalPoints, "pontos interpolados");
+            
+            for (let i = 0; i < totalPoints; i++) {
+                const currentTime = new Date(startTime.getTime() + (i / pointsPerHour) * 60 * 60 * 1000);
+                
+                // Encontra os 2 extremos mais próximos
+                let before = extremes[0];
+                let after = extremes[extremes.length - 1];
+                
+                for (let j = 0; j < extremes.length - 1; j++) {
+                    const extremeTime = new Date(extremes[j].time);
+                    const nextExtremeTime = new Date(extremes[j + 1].time);
+                    
+                    if (currentTime >= extremeTime && currentTime <= nextExtremeTime) {
+                        before = extremes[j];
+                        after = extremes[j + 1];
+                        break;
+                    }
+                }
+                
+                // Interpolação usando cosseno (curva suave)
+                const beforeTime = new Date(before.time).getTime();
+                const afterTime = new Date(after.time).getTime();
+                const timeDiff = afterTime - beforeTime;
+                
+                let height = before.height;
+                
+                if (timeDiff > 0) {
+                    const progress = (currentTime - beforeTime) / timeDiff;
+                    const smoothProgress = (1 - Math.cos(progress * Math.PI)) / 2;
+                    height = before.height + (after.height - before.height) * smoothProgress;
+                }
+                
+                allPoints.push({
+                    time: currentTime,
+                    height: height
+                });
+            }
+            
+            console.log("✅", allPoints.length, "pontos gerados");
+            
+            // Agrupa por dia
+            const tidesByDay = [];
+            for (let i = 0; i < 8; i++) {
+                const date = new Date(today);
+                date.setDate(today.getDate() + i);
+                const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+                const dayEnd = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+                
+                const dayExtremes = extremes.filter(e => {
+                    const eTime = new Date(e.time);
+                    return eTime >= dayStart && eTime <= dayEnd;
+                });
+                
+                if (dayExtremes.length > 0 || i < 7) {
+                    tidesByDay.push({
+                        date: date,
+                        extremes: dayExtremes
+                    });
+                }
+            }
+            
+            renderTidesChart(tidesByDay, allPoints);
+        }
+
+        function renderTidesChart(tidesByDay, allPoints) {
+            const today = new Date().toDateString();
+            
+            let html = '<div class="tides-scroll-container"><div class="tides-chart-wrapper">';
+            
+            // Cabeçalho
+            html += '<div class="days-header">';
+            tidesByDay.slice(0, 7).forEach(day => {
+                const isToday = day.date.toDateString() === today;
+                const dayName = weekDays[day.date.getDay()];
+                const dayDate = day.date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+                
+                html += `
+                    <div class="day-header-item ${isToday ? 'today' : ''}">
+                        <span class="day-header-name">${dayName}</span>
+                        <span class="day-header-date">${dayDate}</span>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            
+            // Gráfico
+            html += '<div class="chart-area"><div class="chart-canvas-container">';
+            html += '<canvas id="continuous-tide-chart"></canvas>';
+            html += '</div></div>';
+            
+            // Resumo
+            html += '<div class="daily-summary">';
+            tidesByDay.slice(0, 7).forEach(day => {
+                const isToday = day.date.toDateString() === today;
+                const extremes = day.extremes;
+                
+                const highs = extremes.filter(e => e.type === 'high');
+                const lows = extremes.filter(e => e.type === 'low');
+                
+                const firstHigh = highs[0];
+                const firstLow = lows[0];
+
+                html += `<div class="summary-day ${isToday ? 'today' : ''}"><div class="summary-tides">`;
+                
+                if (firstLow) {
+                    const lowTime = new Date(firstLow.time);
+                    const adjustedLow = new Date(lowTime.getTime() - (3 * 60 * 60 * 1000));
+                    html += `
+                        <div class="summary-tide">
+                            <span class="summary-tide-label">↓ BAIXA</span>
+                            <span class="summary-tide-value">${firstLow.height.toFixed(2)}m</span>
+                            <span class="summary-tide-time">${adjustedLow.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'})}</span>
+                        </div>
+                    `;
+                }
+                
+                if (firstHigh) {
+                    const highTime = new Date(firstHigh.time);
+                    const adjustedHigh = new Date(highTime.getTime() - (3 * 60 * 60 * 1000));
+                    html += `
+                        <div class="summary-tide">
+                            <span class="summary-tide-label">↑ ALTA</span>
+                            <span class="summary-tide-value">${firstHigh.height.toFixed(2)}m</span>
+                            <span class="summary-tide-time">${adjustedHigh.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'})}</span>
+                        </div>
+                    `;
+                }
+                
+                html += `</div></div>`;
+            });
+            html += '</div></div></div>';
+            
+            document.getElementById('tides-content').innerHTML = html;
+            
+            setTimeout(() => {
+                renderChart(allPoints);
+            }, 100);
+        }
+
+        function renderChart(allPoints) {
+            const ctx = document.getElementById('continuous-tide-chart');
+            if (!ctx) return;
+            
+            if (continuousChart) continuousChart.destroy();
+
+            const labels = allPoints.map(() => '');
+            const data = allPoints.map(t => t.height);
+
+            continuousChart = new Chart(ctx.getContext('2d'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        borderColor: '#d1ad6c',
+                        backgroundColor: 'rgba(209, 173, 108, 0.2)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 2.5,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { 
+                        legend: { display: false },
+                        tooltip: { enabled: false }
+                    },
+                    scales: {
+                        y: { 
+                            display: true,
+                            grid: { display: false },
+                            ticks: { 
+                                color: '#4c6b5c',
+                                font: { size: 10 },
+                                callback: (val) => val.toFixed(1) + 'm'
+                            }
+                        },
+                        x: { 
+                            display: false
+                        }
+                    }
+                }
+            });
+            
+            console.log("✅ Gráfico renderizado com", data.length, "pontos");
+        }
+    </script>
+</body>
+</html>
