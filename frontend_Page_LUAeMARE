@@ -1,0 +1,83 @@
+import { getWeekTideData } from 'backend/mare-semanal';
+import { getWeekMoonData } from 'backend/lua-semanal';
+
+$w.onReady(function () {
+    console.log("=== PÁGINA CARREGADA ===");
+    iniciarWidgets();
+});
+
+function iniciarWidgets() {
+    // Widget Lua
+    $w("#luasemanal").onMessage((event) => {
+        console.log("📨 Mensagem recebida:", event.data);
+        
+        if (event.data === "readyMoon") {
+            console.log("🌙 Widget lua pronto!");
+            buscarLuaSemanal();
+        }
+        
+        if (event.data === "moonReceived") {
+            console.log("✅ Lua renderizada com sucesso!");
+        }
+    });
+    
+    // Widget Marés
+    $w("#maresemanal").onMessage((event) => {
+        console.log("📨 Mensagem recebida:", event.data);
+        
+        if (event.data === "readyTides") {
+            console.log("🌊 Widget maré pronto!");
+            buscarMareSemanal();
+        }
+        
+        if (event.data === "tidesReceived") {
+            console.log("✅ Marés renderizadas com sucesso!");
+        }
+    });
+}
+
+function buscarLuaSemanal() {
+    console.log("→ Buscando dados da lua...");
+    
+    getWeekMoonData()
+        .then((dados) => {
+            console.log("← Dados da lua retornados:", dados);
+            
+            if (dados && Array.isArray(dados) && dados.length > 0) {
+                console.log("→ Enviando", dados.length, "dias para o widget");
+                
+                $w("#luasemanal").postMessage({
+                    type: 'moon',
+                    data: dados
+                });
+            } else {
+                console.warn("⚠️ Dados da lua vazios ou inválidos");
+            }
+        })
+        .catch((erro) => {
+            console.error("❌ ERRO ao buscar lua:", erro);
+        });
+}
+
+function buscarMareSemanal() {
+    console.log("→ Buscando dados das marés...");
+    
+    getWeekTideData()
+        .then((dados) => {
+            console.log("← Dados das marés retornados:", dados);
+            
+            if (dados && Array.isArray(dados) && dados.length > 0) {
+                console.log("→ Enviando", dados.length, "registros para o widget");
+                
+                $w("#maresemanal").postMessage({
+                    type: 'tides',
+                    data: dados
+                });
+            } else {
+                console.warn("⚠️ Dados das marés vazios ou inválidos");
+            }
+        })
+        .catch((erro) => {
+            console.error("❌ ERRO ao buscar marés:", erro);
+        });
+}
