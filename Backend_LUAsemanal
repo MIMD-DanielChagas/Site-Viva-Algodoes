@@ -1,0 +1,97 @@
+import { Permissions, webMethod } from 'wix-web-module';
+import { fetch } from 'wix-fetch';
+import wixData from 'wix-data';
+
+const API_KEY_LUA = 'f8928d78-e7f3-11f0-b5c3-0242ac130003-f8928e0e-e7f3-11f0-b5c3-0242ac130003';
+
+export const getWeekMoonData = webMethod(Permissions.Anyone, async () => {
+    const hoje = new Date();
+    const hojeStr = hoje.toISOString().split('T')[0];
+    
+    // Busca no CMS
+    try {
+        const resultados = await wixData.query("WeeklyMoonPhases")
+            .eq("dataRef", hojeStr)
+            .find({suppressAuth: true, suppressHooks: true});
+        
+        if (resultados.items && resultados.items.length > 0) {
+            console.log("✅ Dados da lua encontrados no CMS");
+            const dados = JSON.parse(resultados.items[0].jsonDados);
+            return dados;
+        }
+    } catch (erroCMS) {
+        console.error("Erro ao ler CMS lua:", erroCMS);
+    }
+
+    // Busca na API
+    try {
+        const fim = new Date(hoje);
+        fim.setDate(hoje.getDate() + 7); // Busca 7 dias completos
+        const fimStr = fim.toISOString().split('T')[0];
+        
+        const url = `https://api.stormglass.io/v2/astronomy/point?lat=-13.93&lng=-38.93&start=${hojeStr}&end=${fimStr}`;
+        
+        console.log("🌙 Buscando lua na API...");
+        
+        const response = await fetch(url, { 
+            headers: { 'Authorization': API_KEY_LUA }
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("❌ Erro API lua:", response.status, errorText);
+            return [];
+        }
+        
+        const resData = await response.json();
+        
+        if (!resData.data || resData.data.length === 0) {
+            console.warn("⚠️ API retornou vazio");
+            return [];
+        }
+        
+        // Processa incluindo próximas mudanças de fase
+        const weekData = resData.data.map(dayData => {
+            const result = {
+                date: dayData.time,
+                phase: dayData.moonPhase?.current?.text || 'new moon'
+            };
+            
+            // Adiciona informação sobre próximas mudanças de fase
+            if (dayData.moonPhase?.closest) {
+                const closest = Array.isArray(dayData.moonPhase.closest) 
+                    ? dayData.moonPhase.closest 
+                    : [dayData.moonPhase.closest];
+                
+                result.nextPhases = closest.map(ph => ({
+                    phase: ph.text,
+                    time: ph.time
+                }));
+            }
+            
+            return result;
+        });
+        
+        console.log(`📊 API retornou ${weekData.length} dias de lua`);
+        
+        if (weekData.length > 0) {
+            try {
+                const itemSalvo = await wixData.insert("WeeklyMoonPhases", {
+                    title: `Lua ${hojeStr}`,
+                    dataRef: hojeStr,
+                    jsonDados: JSON.stringify(weekData)
+                }, {suppressAuth: true, suppressHooks: true});
+                
+                console.log("✅ LUA SALVA NO CMS! ID:", itemSalvo._id);
+            } catch (saveErr) {
+                console.error("❌ Erro ao salvar lua:", saveErr.message);
+            }
+        }
+        
+        return weekData;
+        
+    } catch (erro) {
+        console.error("❌ Erro geral lua:", erro.message);
+        return [];
+    }
+});
