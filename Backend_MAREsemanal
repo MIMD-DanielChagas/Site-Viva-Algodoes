@@ -1,0 +1,71 @@
+import { Permissions, webMethod } from 'wix-web-module';
+import { fetch } from 'wix-fetch';
+import wixData from 'wix-data';
+
+const API_KEY = 'f1136926-e8b8-11f0-9b8c-0242ac130003-f11369c6-e8b8-11f0-9b8c-0242ac130003';
+
+export const getWeekTideData = webMethod(Permissions.Anyone, async () => {
+    const hoje = new Date();
+    const hojeStr = hoje.toISOString().split('T')[0];
+    
+    // Busca no CMS
+    try {
+        const resultados = await wixData.query("WeeklyTideData")
+            .eq("dataRef", hojeStr)
+            .find({suppressAuth: true, suppressHooks: true});
+        
+        if (resultados.items && resultados.items.length > 0) {
+            console.log("✅ Dados de marés encontrados no CMS");
+            const dados = JSON.parse(resultados.items[0].jsonDados);
+            return dados;
+        }
+    } catch (erroCMS) {
+        console.error("Erro ao ler CMS:", erroCMS);
+    }
+
+    // Busca na API - CORRIGIDO: agora busca 7 dias completos
+    try {
+        const fim = new Date(hoje);
+        fim.setDate(hoje.getDate() + 7); // MUDEI de 6 para 7
+        const fimStr = fim.toISOString().split('T')[0];
+        
+        const url = `https://api.stormglass.io/v2/tide/extremes/point?lat=-13.93&lng=-38.93&start=${hojeStr}&end=${fimStr}`;
+        
+        console.log("📡 Buscando marés na API...");
+        
+        const response = await fetch(url, { 
+            headers: { 'Authorization': API_KEY }
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("❌ Erro API:", response.status, errorText);
+            return [];
+        }
+        
+        const resData = await response.json();
+        const tides = resData.data || [];
+        
+        console.log(`📊 API retornou ${tides.length} registros de marés`);
+        
+        if (tides.length > 0) {
+            try {
+                const itemSalvo = await wixData.insert("WeeklyTideData", {
+                    title: `Marés ${hojeStr}`,
+                    dataRef: hojeStr,
+                    jsonDados: JSON.stringify(tides)
+                }, {suppressAuth: true, suppressHooks: true});
+                
+                console.log("✅ SALVO NO CMS! ID:", itemSalvo._id);
+            } catch (saveErr) {
+                console.error("❌ Erro ao salvar:", saveErr.message);
+            }
+        }
+        
+        return tides;
+        
+    } catch (erro) {
+        console.error("❌ Erro geral:", erro.message);
+        return [];
+    }
+});
