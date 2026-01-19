@@ -2,13 +2,177 @@ import { Permissions, webMethod } from 'wix-web-module';
 import { fetch } from 'wix-fetch';
 import wixData from 'wix-data';
 
-const API_KEY_LUA = 'f8928d78-e7f3-11f0-b5c3-0242ac130003-f8928e0e-e7f3-11f0-b5c3-0242ac130003';
+// Mapeia as fases retornadas pela USNO para nosso sistema
+const PHASE_ORDER = {
+    'New Moon': 0,
+    'First Quarter': 1,
+    'Full Moon': 2,
+    'Last Quarter': 3
+};
 
+const PHASE_NAMES = [
+    'New Moon',
+    'Waxing Crescent',
+    'First Quarter',
+    'Waxing Gibbous',
+    'Full Moon',
+    'Waning Gibbous',
+    'Last Quarter',
+    'Waning Crescent'
+];
+
+/**
+ * Calcula a fase da lua para uma data específica baseado nas mudanças de fase
+ */
+function calculateCurrentPhase(targetDate, phaseChanges) {
+    const target = new Date(targetDate);
+    target.setHours(0, 0, 0, 0);
+    
+    // Encontra a mudança de fase mais recente antes ou igual à data alvo
+    let lastPhase = null;
+    let nextPhase = null;
+    
+    for (const change of phaseChanges) {
+        const changeDate = new Date(change.datetime);
+        
+        if (changeDate <= target) {
+            lastPhase = change;
+        } else if (!nextPhase) {
+            nextPhase = change;
+            break;
+        }
+    }
+    
+    if (!lastPhase) {
+        // Se não há fase anterior, usa a próxima fase para estimar
+        return nextPhase ? getPreviousPhase(nextPhase.phase) : 'Waxing Crescent';
+    }
+    
+    // Determina a fase atual baseado na última mudança
+    const phaseIndex = PHASE_ORDER[lastPhase.phase];
+    
+    if (nextPhase) {
+        const daysSinceChange = Math.floor((target - new Date(lastPhase.datetime)) / (1000 * 60 * 60 * 24));
+        const daysToNext = Math.floor((new Date(nextPhase.datetime) - new Date(lastPhase.datetime)) / (1000 * 60 * 60 * 24));
+        
+        // Se está muito próximo da próxima fase (< 10% do ciclo), mantém a fase atual
+        if (daysSinceChange / daysToNext < 0.1) {
+            return PHASE_NAMES[phaseIndex * 2];
+        }
+    }
+    
+    // Retorna a fase intermediária apropriada
+    return PHASE_NAMES[phaseIndex * 2 + 1] || PHASE_NAMES[phaseIndex * 2];
+}
+
+/**
+ * Retorna a fase anterior no ciclo lunar
+ */
+function getPreviousPhase(currentPhase) {
+    const phaseIndex = PHASE_ORDER[currentPhase];
+    const prevIndex = (phaseIndex - 1 + 4) % 4;
+    return PHASE_NAMES[prevIndex * 2 + 1] || PHASE_NAMES[prevIndex * 2];
+}
+
+/**
+ * Busca as mudanças de fase da lua na USNO API
+ */
+async function fetchUSNOMoonPhases(startDate, numPhases = 12) {
+    const dateStr = `${startDate.getFullYear()}-${startDate.getMonth() + 1}-${startDate.getDate()}`;
+    const url = `https://aa.usno.navy.mil/api/moon/phases/date?date=${dateStr}&nump=${numPhases}`;
+    
+    console.log("🌙 Buscando fases na USNO API:", url);
+    
+    try {
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("❌ Erro USNO API:", response.status, errorText);
+            return null;
+        }
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            console.error("❌ Erro retornado pela USNO:", data.error);
+            return null;
+        }
+        
+        if (!data.phasedata || data.phasedata.length === 0) {
+            console.warn("⚠️ USNO retornou dados vazios");
+            return null;
+        }
+        
+        console.log(`✅ USNO retornou ${data.phasedata.length} mudanças de fase`);
+        
+        // Converte para formato padronizado com datetime ISO
+        const phaseChanges = data.phasedata.map(p => {
+            // A USNO retorna hora em formato HH:MM, precisamos criar datetime completo
+            const [hours, minutes] = p.time.split(':').map(Number);
+            const datetime = new Date(Date.UTC(p.year, p.month - 1, p.day, hours, minutes));
+            
+            return {
+                phase: p.phase,
+                datetime: datetime.toISOString(),
+                year: p.year,
+                month: p.month,
+                day: p.day,
+                time: p.time
+            };
+        });
+        
+        return phaseChanges;
+        
+    } catch (error) {
+        console.error("❌ Erro ao buscar USNO:", error.message);
+        return null;
+    }
+}
+
+/**
+ * Gera dados de 7 dias com fase atual e próximas mudanças
+ */
+function generateWeekData(startDate, phaseChanges) {
+    const weekData = [];
+    
+    for (let i = 0; i < 7; i++) {
+        const currentDate = new Date(startDate);
+        currentDate.setDate(startDate.getDate() + i);
+        currentDate.setHours(0, 0, 0, 0);
+        
+        // Calcula a fase atual deste dia
+        const currentPhase = calculateCurrentPhase(currentDate, phaseChanges);
+        
+        // Encontra mudanças de fase que ocorrem neste dia
+        const nextPhases = phaseChanges.filter(change => {
+            const changeDate = new Date(change.datetime);
+            return changeDate.getUTCFullYear() === currentDate.getFullYear() &&
+                   changeDate.getUTCMonth() === currentDate.getMonth() &&
+                   changeDate.getUTCDate() === currentDate.getDate();
+        }).map(change => ({
+            phase: change.phase,
+            time: change.datetime
+        }));
+        
+        weekData.push({
+            date: currentDate.toISOString(),
+            phase: currentPhase,
+            nextPhases: nextPhases
+        });
+    }
+    
+    return weekData;
+}
+
+/**
+ * Método principal exportado para o frontend
+ */
 export const getWeekMoonData = webMethod(Permissions.Anyone, async () => {
     const hoje = new Date();
     const hojeStr = hoje.toISOString().split('T')[0];
     
-    // Busca no CMS
+    // ETAPA 1: Tentar buscar do CMS
     try {
         const resultados = await wixData.query("WeeklyMoonPhases")
             .eq("dataRef", hojeStr)
@@ -20,78 +184,37 @@ export const getWeekMoonData = webMethod(Permissions.Anyone, async () => {
             return dados;
         }
     } catch (erroCMS) {
-        console.error("Erro ao ler CMS lua:", erroCMS);
+        console.error("⚠️ Erro ao ler CMS lua:", erroCMS);
     }
-
-    // Busca na API
-    try {
-        const fim = new Date(hoje);
-        fim.setDate(hoje.getDate() + 7); // Busca 7 dias completos
-        const fimStr = fim.toISOString().split('T')[0];
-        
-        const url = `https://api.stormglass.io/v2/astronomy/point?lat=-13.93&lng=-38.93&start=${hojeStr}&end=${fimStr}`;
-        
-        console.log("🌙 Buscando lua na API...");
-        
-        const response = await fetch(url, { 
-            headers: { 'Authorization': API_KEY_LUA }
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error("❌ Erro API lua:", response.status, errorText);
-            return [];
-        }
-        
-        const resData = await response.json();
-        
-        if (!resData.data || resData.data.length === 0) {
-            console.warn("⚠️ API retornou vazio");
-            return [];
-        }
-        
-        // Processa incluindo próximas mudanças de fase
-        const weekData = resData.data.map(dayData => {
-            const result = {
-                date: dayData.time,
-                phase: dayData.moonPhase?.current?.text || 'new moon'
-            };
-            
-            // Adiciona informação sobre próximas mudanças de fase
-            if (dayData.moonPhase?.closest) {
-                const closest = Array.isArray(dayData.moonPhase.closest) 
-                    ? dayData.moonPhase.closest 
-                    : [dayData.moonPhase.closest];
-                
-                result.nextPhases = closest.map(ph => ({
-                    phase: ph.text,
-                    time: ph.time
-                }));
-            }
-            
-            return result;
-        });
-        
-        console.log(`📊 API retornou ${weekData.length} dias de lua`);
-        
-        if (weekData.length > 0) {
-            try {
-                const itemSalvo = await wixData.insert("WeeklyMoonPhases", {
-                    title: `Lua ${hojeStr}`,
-                    dataRef: hojeStr,
-                    jsonDados: JSON.stringify(weekData)
-                }, {suppressAuth: true, suppressHooks: true});
-                
-                console.log("✅ LUA SALVA NO CMS! ID:", itemSalvo._id);
-            } catch (saveErr) {
-                console.error("❌ Erro ao salvar lua:", saveErr.message);
-            }
-        }
-        
-        return weekData;
-        
-    } catch (erro) {
-        console.error("❌ Erro geral lua:", erro.message);
+    
+    // ETAPA 2: Buscar da USNO API
+    // Pedimos 12 fases (3 ciclos lunares) para ter dados suficientes para calcular
+    const phaseChanges = await fetchUSNOMoonPhases(hoje, 12);
+    
+    if (!phaseChanges || phaseChanges.length === 0) {
+        console.error("❌ Não foi possível obter dados da USNO");
         return [];
     }
+    
+    // ETAPA 3: Gerar dados da semana
+    const weekData = generateWeekData(hoje, phaseChanges);
+    
+    console.log(`📊 Gerados dados de ${weekData.length} dias`);
+    
+    // ETAPA 4: Salvar no CMS
+    if (weekData.length > 0) {
+        try {
+            await wixData.insert("WeeklyMoonPhases", {
+                title: `Lua ${hojeStr}`,
+                dataRef: hojeStr,
+                jsonDados: JSON.stringify(weekData)
+            }, {suppressAuth: true, suppressHooks: true});
+            
+            console.log("✅ Dados da lua salvos no CMS!");
+        } catch (saveErr) {
+            console.error("⚠️ Erro ao salvar lua no CMS:", saveErr.message);
+        }
+    }
+    
+    return weekData;
 });
